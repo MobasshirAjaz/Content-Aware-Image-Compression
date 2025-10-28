@@ -244,11 +244,30 @@ if __name__ == "__main__":
     p.add_argument("image", help="Path to the input image.")
     p.add_argument("--subjects", nargs="+", required=True, help="List of subject names (e.g., 'person dog car').")
     p.add_argument("--dummy", action="store_true", help="Use dummy masks for testing instead of the model.")
+    
+    # --- FIX: Add the new argument here ---
+    p.add_argument(
+        "--grounding-model", 
+        default="IDEA-Research/grounding-dino-tiny", 
+        help="Hugging Face model name for Grounding DINO."
+    )
+    
     args = p.parse_args()
+
+    # --- FIX: Use the argument to set the model name ---
+    # Note: argparse converts --grounding-model to args.grounding_model
+    GROUNDING_MODEL = args.grounding_model 
 
     if not os.path.exists(args.image):
         print(f"Error: Image not found at '{args.image}'")
         sys.exit(1)
+        
+    # Now, you must load the models *after* parsing the arguments
+    print(f"Loading Grounding DINO model: {GROUNDING_MODEL}...")
+    processor = AutoProcessor.from_pretrained(GROUNDING_MODEL)
+    grounding_model = AutoModelForZeroShotObjectDetection.from_pretrained(GROUNDING_MODEL).to(DEVICE)
+    print("Models loaded successfully.")
+
 
     generate_masks(args.image, args.subjects, use_dummy=args.dummy)
     print("\nProcess complete. Masks saved to 'colored_masks/' and 'blackwhite_masks/' directories.")
