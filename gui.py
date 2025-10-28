@@ -1,33 +1,37 @@
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, simpledialog
 from PIL import Image, ImageTk
 import os
 import shutil
 import time
 import threading
-from tkinter import simpledialog
 
-# local pipeline modules
+# --- Local pipeline modules ---
+# It's good practice to handle potential import errors.
 try:
     from LLM import run_on_latest
-except Exception:
+except (ImportError, Exception):
     run_on_latest = None
 
 try:
     import segmentation
-except Exception:
+except (ImportError, Exception) as e:
+    # This will print the true reason the import is failing
+    print(f"--- FAILED TO IMPORT SEGMENTATION ---")
+    print(f"Error: {e}")
+    print(f"------------------------------------")
     segmentation = None
 
 try:
     import make_transparent
-except Exception:
+except (ImportError, Exception):
     make_transparent = None
 
 
 class BeforeAfterApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Before & After Image Slider")
+        self.root.title("Content-Aware Image Compression")
 
         # Upload button
         self.upload_btn = tk.Button(root, text="Upload Image", command=self.upload_image)
@@ -73,20 +77,19 @@ class BeforeAfterApp:
         timestamp = int(time.time())
         stored_name = f"{name}_{timestamp}{ext}"
         stored_path = os.path.join(input_dir, stored_name)
+        
         try:
             shutil.copy2(filepath, stored_path)
         except Exception:
-            # fallback: try to save via PIL
             img_tmp = Image.open(filepath)
             img_tmp.save(stored_path)
 
         # Load before image from the stored copy
         self.before_img = Image.open(stored_path).convert("RGB").resize((600, 400))
-        self.before_size = os.path.getsize(stored_path)  # in bytes
+        self.before_size = os.path.getsize(stored_path)
 
-        # ---- Computation step (placeholder: same as before) ----
+        # Placeholder for after image
         self.after_img = self.compute_after_image(self.before_img)
-        # Save temp after image to measure size (kept in repo root)
         self.after_img.save("temp_after.jpg", "JPEG")
         self.after_size = os.path.getsize("temp_after.jpg")
 
@@ -102,95 +105,85 @@ class BeforeAfterApp:
         # Start slider
         self.slider.set(50)
         self.update_slider(50)
-
-        # Update size label
         self.update_size_label()
 
-        # Start full pipeline in background to avoid freezing the GUI
-        worker = threading.Thread(target=self.run_full_pipeline, args=(stored_path,), daemon=True)
-        worker.start()
-
-    def run_full_pipeline(self, stored_path: str):
-        """Run LLM -> segmentation -> transparent generation for the stored image.
-
-        The function tries to use the LLM first. If LLM is unavailable, prompts
-        the user for a comma-separated subject list. If segmentation real models
-        are unavailable, it falls back to dummy masks.
-        """
-        # 1) Get subject list from LLM if available
+        # --- CORRECTED LOGIC ---
+        # 1. Get user input in the main thread BEFORE starting the worker.
         subjects = None
         if run_on_latest is not None:
             try:
                 subjects = run_on_latest(min_confidence=0.75)
-            except Exception as e:
-                # LLM not available or failed; we'll prompt the user below
+            except Exception:
                 subjects = None
 
         if not subjects:
-            # Ask user for subjects; allow empty to use dummy
-            prompt = simpledialog.askstring("Subjects", "Enter comma-separated subject names (leave blank to use dummy masks):")
+            # This is now safe because it's called from the main GUI thread.
+            prompt = simpledialog.askstring("Subjects", "Enter comma-separated subject names (leave blank for dummy masks):")
             if prompt:
                 subjects = [s.strip() for s in prompt.split(",") if s.strip()]
             else:
-                # fallback dummy subjects
-                subjects = ["subject1", "subject2", "subject3"]
+                # Use an empty list to signal that dummy masks should be used.
+                subjects = []
 
-        # 2) Run segmentation
-        used_dummy = False
+        # 2. Start the background pipeline and pass the subjects to it.
+        worker = threading.Thread(
+            target=self.run_full_pipeline, 
+            args=(stored_path, subjects), # <<< Pass subjects to the thread
+            daemon=True
+        )
+        worker.start()
+
+    # <<< MODIFIED function signature to accept subjects
+    def run_full_pipeline(self, stored_path: str, subjects: list):
+        """Run segmentation and transparency generation in the background."""
+        
+        # We now receive the subjects directly. If the list is empty, we use dummy data.
+        use_dummy = not subjects
+        if use_dummy:
+            subjects = ["subject1", "subject2", "subject3"]
+
+        # 1. Run segmentation
         if segmentation is not None:
             try:
-                segmentation.generate_masks(stored_path, subjects, use_dummy=False)
+                segmentation.generate_masks(stored_path, subjects, use_dummy=use_dummy)
             except Exception as e:
-                # If segmentation pipeline not available or raises, fallback to dummy
+                message = f"Segmentation failed: {e}"
                 try:
-                    segmentation.generate_masks(stored_path, subjects, use_dummy=True)
-                    used_dummy = True
-                except Exception as e2:
-                    # both attempts failed
-                    message = f"Segmentation failed: {e}\n{e2}"
-                    try:
-                        messagebox.showerror("Segmentation error", message)
-                    except Exception:
-                        print(message)
-                    return
+                    # Use messagebox from the main thread if possible, but print as a fallback.
+                    self.root.after(0, lambda: messagebox.showerror("Segmentation Error", message))
+                except Exception:
+                    print(message)
+                return
         else:
-            # segmentation module not importable: nothing to run
-            try:
-                messagebox.showwarning("Segmentation missing", "Segmentation module not available. Skipping segmentation.")
-            except Exception:
-                print("Segmentation module not available. Skipping segmentation.")
+            print("Segmentation module not available. Skipping segmentation.")
 
-        # 3) Create transparent images from bw masks
+        # 2. Create transparent images from bw masks
         if make_transparent is not None:
             try:
                 make_transparent.process_all_for_image(stored_path)
             except Exception as e:
+                message = f"Transparency generation failed: {e}"
                 try:
-                    messagebox.showerror("Transparency generation failed", str(e))
+                    self.root.after(0, lambda: messagebox.showerror("Transparency Error", message))
                 except Exception:
-                    print("Transparency generation failed:", e)
+                    print(message)
                 return
         else:
-            try:
-                messagebox.showwarning("Transparency missing", "make_transparent module not available. Skipping transparent image generation.")
-            except Exception:
-                print("make_transparent module not available. Skipping transparent image generation.")
+            print("make_transparent module not available. Skipping.")
 
-        # Notify user of completion
+        # 3. Notify user of completion
+        msg = "Pipeline completed"
+        if use_dummy:
+            msg += " (used dummy segmentation masks)"
+        
         try:
-            msg = "Pipeline completed"
-            if used_dummy:
-                msg += " (used dummy segmentation masks)"
-            messagebox.showinfo("Done", msg)
+            # Schedule the final message box to run on the main thread.
+            self.root.after(0, lambda: messagebox.showinfo("Done", msg))
         except Exception:
-            print("Pipeline completed")
+            print(msg)
 
     def compute_after_image(self, img: Image.Image) -> Image.Image:
-        """
-        Placeholder for your image computation logic.
-        Replace this with your actual processing.
-        """
-        # Example: currently just returns the same image
+        """Placeholder for your image computation logic."""
         return img.copy()
 
     def update_slider(self, value):
@@ -205,16 +198,12 @@ class BeforeAfterApp:
         cropped_after = self.after_img.crop((0, 0, mask_width, height))
         tk_cropped = ImageTk.PhotoImage(cropped_after)
 
-        # Update canvas
         self.canvas.itemconfig(self.canvas_before, image=self.tk_before)
         self.canvas.itemconfig(self.canvas_after, image=tk_cropped)
-
-        # Keep reference
-        self.tk_after_cropped = tk_cropped
+        self.tk_after_cropped = tk_cropped # Keep reference
 
     def update_size_label(self):
         def fmt_size(size_bytes):
-            # Convert bytes to KB/MB for readability
             if size_bytes < 1024:
                 return f"{size_bytes} B"
             elif size_bytes < 1024**2:

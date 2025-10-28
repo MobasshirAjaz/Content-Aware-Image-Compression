@@ -7,9 +7,6 @@ This module:
 - Saves colored masks in `colored_masks/` and black/white masks in `blackwhite_masks/`.
 - Creates background masks (union of subjects subtracted from full image) and saves
   them under `.../background/` subfolders.
-
-This implementation is based on the Hugging Face Grounded-SAM2 demo and requires
-the necessary libraries (transformers, supervision, sam2) and model checkpoints.
 """
 
 import os
@@ -37,6 +34,8 @@ except ImportError as e:
 BASE_DIR = os.path.dirname(__file__)
 COLORED_DIR = os.path.join(BASE_DIR, "colored_masks")
 BW_DIR = os.path.join(BASE_DIR, "blackwhite_masks")
+# REMOVED: TRANSPARENCY_DIR is no longer needed here.
+
 
 # A custom color map for consistent colors in supervision
 CUSTOM_COLOR_MAP = [
@@ -46,39 +45,41 @@ CUSTOM_COLOR_MAP = [
 ]
 
 # --- Global Model Loading & Configuration ---
-# Load models only once when the module is imported for efficiency.
-
-print("Loading Grounded SAM2 models...")
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-
-# Model checkpoints (adjust paths if necessary)
 GROUNDING_MODEL = "IDEA-Research/grounding-dino-tiny"
 SAM2_CHECKPOINT = "./checkpoints/sam2.1_hiera_large.pt"
 SAM2_MODEL_CONFIG = "configs/sam2.1/sam2.1_hiera_l.yaml"
 
-# Check if model checkpoints exist
-if not os.path.exists(SAM2_CHECKPOINT) or not os.path.exists(SAM2_MODEL_CONFIG):
-    print(f"Error: SAM2 model files not found.")
-    print(f"Please download '{os.path.basename(SAM2_CHECKPOINT)}' and place it in a 'checkpoints/' directory.")
-    print(f"And ensure '{os.path.basename(SAM2_MODEL_CONFIG)}' is in a 'configs/sam2.1/' directory.")
-    sys.exit(1)
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+sam2_predictor = None
+processor = None
+grounding_model = None
 
-# Use bfloat16 for performance if available
-torch.autocast(device_type=DEVICE, dtype=torch.bfloat16).__enter__()
+def load_models():
+    """Loads all models into global variables."""
+    global sam2_predictor, processor, grounding_model
+    
+    if processor is not None:
+        return
 
-# Build SAM2 image predictor
-sam2_model = build_sam2(SAM2_MODEL_CONFIG, SAM2_CHECKPOINT, device=DEVICE)
-sam2_predictor = SAM2ImagePredictor(sam2_model)
+    print("Loading Grounded SAM2 models...")
+    if not os.path.exists(SAM2_CHECKPOINT) or not os.path.exists(SAM2_MODEL_CONFIG):
+        print(f"Error: SAM2 model files not found.")
+        sys.exit(1)
 
-# Build Grounding DINO from Hugging Face
-processor = AutoProcessor.from_pretrained(GROUNDING_MODEL)
-grounding_model = AutoModelForZeroShotObjectDetection.from_pretrained(GROUNDING_MODEL).to(DEVICE)
-print("Models loaded successfully.")
+    torch.autocast(device_type=DEVICE, dtype=torch.bfloat16).__enter__()
+
+    sam2_model = build_sam2(SAM2_MODEL_CONFIG, SAM2_CHECKPOINT, device=DEVICE)
+    sam2_predictor = SAM2ImagePredictor(sam2_model)
+
+    print(f"Loading Grounding DINO model: {GROUNDING_MODEL}...")
+    processor = AutoProcessor.from_pretrained(GROUNDING_MODEL)
+    grounding_model = AutoModelForZeroShotObjectDetection.from_pretrained(GROUNDING_MODEL).to(DEVICE)
+    print("Models loaded successfully.")
 
 
-# --- Directory and Helper Functions ---
 def ensure_dirs():
     """Create all necessary output directories."""
+    # REMOVED: TRANSPARENCY_DIR is no longer created here.
     for d in (COLORED_DIR, BW_DIR):
         os.makedirs(d, exist_ok=True)
         os.makedirs(os.path.join(d, "background"), exist_ok=True)
@@ -89,11 +90,9 @@ def run_grounded_sam(image_path: str, subjects: List[str]):
     Runs the full Grounded SAM2 pipeline on a single image to produce and save masks.
     """
     print(f"Running segmentation on '{os.path.basename(image_path)}' for subjects: {subjects}")
-    # Format subjects into a text prompt for Grounding DINO
     text_prompt = " . ".join(subjects) + " ."
     text_prompt = text_prompt.lower()
 
-    # --- 1. Load Image and Run Grounding DINO ---
     image = Image.open(image_path).convert("RGB")
     inputs = processor(images=image, text=text_prompt, return_tensors="pt").to(DEVICE)
     with torch.no_grad():
@@ -106,90 +105,79 @@ def run_grounded_sam(image_path: str, subjects: List[str]):
         target_sizes=[image.size[::-1]]
     )
 
-    # Get bounding boxes for SAM2
     input_boxes = results[0]["boxes"].cpu().numpy()
     if len(input_boxes) == 0:
         print("Warning: Grounding DINO found no objects for the given subjects.")
         return
 
-    # --- 2. Run SAM2 with Box Prompts ---
     sam2_predictor.set_image(np.array(image))
-    masks, _, _ = sam2_predictor.predict(
-        box=input_boxes,
-        multimask_output=False,
-    )
+    masks, _, _ = sam2_predictor.predict(box=input_boxes, multimask_output=False)
     if masks.ndim == 4:
-        masks = masks.squeeze(1) # (N, 1, H, W) -> (N, H, W)
+        masks = masks.squeeze(1)
 
-    # --- 3. Process and Save Masks using Supervision ---
+    class_names = results[0]["text_labels"] 
     detections = sv.Detections(
         xyxy=input_boxes,
         mask=masks.astype(bool),
-        class_id=np.array(list(range(len(results[0]["labels"])))) # Assign a unique ID to each detection
+        class_id=np.arange(len(class_names))
     )
-    class_names = results[0]["labels"]
     base = os.path.splitext(os.path.basename(image_path))[0]
-
-    # Annotator for saving individual colored masks
     mask_annotator_individual = sv.MaskAnnotator(color=ColorPalette.from_hex(CUSTOM_COLOR_MAP))
-    img_cv2 = cv2.imread(image_path) # Load with OpenCV for annotation
+    img_cv2 = cv2.imread(image_path)
 
     class_counts = {}
     collected_masks = []
 
-    for i in range(len(detections)):
-        single_detection = detections[i]
-        class_name = class_names[single_detection.class_id[0]]
+    for xyxy_box, current_mask, class_id in zip(detections.xyxy, detections.mask, detections.class_id):
+        class_name = class_names[class_id]
         current_count = class_counts.get(class_name, 0)
         class_counts[class_name] = current_count + 1
-
         name_suffix = f"{class_name}" if current_count == 0 else f"{class_name}_{current_count}"
         mask_filename = f"{base}__{name_suffix}.png"
 
-        # Save B&W mask
-        current_mask = single_detection.mask[0]
         binary_mask_img = Image.fromarray((current_mask * 255).astype("uint8"), mode="L")
         binary_mask_img.save(os.path.join(BW_DIR, mask_filename))
-        collected_masks.append(current_mask.astype(bool))
+        collected_masks.append(current_mask)
 
-        # Save individual colored mask
+        single_detection = sv.Detections(
+            xyxy=np.array([xyxy_box]),
+            mask=np.array([current_mask]),
+            class_id=np.array([class_id])
+        )
         segmented_image = mask_annotator_individual.annotate(scene=img_cv2.copy(), detections=single_detection)
         cv2.imwrite(os.path.join(COLORED_DIR, mask_filename), segmented_image)
-
-    # --- 4. Create and Save Background Mask ---
+        
+        # REMOVED: The block for saving individual transparent images is gone.
+        
     if collected_masks:
         union = np.logical_or.reduce(collected_masks)
         background_mask = ~union
 
-        # Save B&W background mask
         bg_bw_path = os.path.join(BW_DIR, "background", f"{base}__background.png")
         Image.fromarray((background_mask * 255).astype("uint8"), mode="L").save(bg_bw_path)
 
-        # Save colored background (original image where mask is true)
-        bg_color_path = os.path.join(COLORED_DIR, "background", f"{base}__background.png")
-        bg_visible = Image.new("RGBA", image.size, (0, 0, 0, 0))
-        bg_visible.paste(image, mask=Image.fromarray((background_mask * 255).astype("uint8")))
-        bg_visible.save(bg_color_path)
+        # REMOVED: The block for saving the transparent background image is gone.
 
     print("Finished saving segmentation masks.")
 
 
 def generate_masks(image_path: str, subjects: List[str], use_dummy: bool = False):
     """
-    Main entry point for generating masks. Can use the real model or fall back to dummy data.
+    Main entry point for generating masks.
     """
+    if not use_dummy and processor is None:
+        load_models()
+
     ensure_dirs()
     if use_dummy:
         print("Using dummy masks for development.")
         _generate_dummy_masks(image_path, subjects)
         return
 
-    # Run the real Grounded SAM pipeline
     run_grounded_sam(image_path, subjects)
 
 
 def _generate_dummy_masks(image_path: str, subjects: List[str]):
-    """Generates placeholder masks by splitting the image into vertical slices."""
     img = Image.open(image_path).convert("RGB")
     w, h = img.size
     n = max(1, len(subjects))
@@ -201,12 +189,9 @@ def _generate_dummy_masks(image_path: str, subjects: List[str]):
         x1 = w if i == n - 1 else (i + 1) * slice_w
         mask[:, x0:x1] = True
         masks[name] = mask
-    
-    # Save the generated dummy masks
     _save_dummy_mask_images(image_path, masks, img)
 
 def _save_dummy_mask_images(image_path: str, masks: dict, img: Image.Image):
-    """Saves the images for the dummy mask generator."""
     base = os.path.splitext(os.path.basename(image_path))[0]
     img_rgba = img.convert("RGBA")
     w, h = img.size
@@ -216,25 +201,25 @@ def _save_dummy_mask_images(image_path: str, masks: dict, img: Image.Image):
         return tuple(random.randint(50, 230) for _ in range(3))
 
     for name, mask in masks.items():
-        # B&W mask
-        Image.fromarray((mask * 255).astype("uint8"), mode="L").save(os.path.join(BW_DIR, f"{base}__{name}.png"))
+        bw_mask_img = Image.fromarray((mask * 255).astype("uint8"), mode="L")
+        bw_mask_img.save(os.path.join(BW_DIR, f"{base}__{name}.png"))
         
-        # Color mask
         color = _random_color(name)
         overlay = Image.new("RGBA", (w, h), color + (150,))
         color_img = Image.new("RGBA", (w, h))
-        color_img.paste(overlay, mask=Image.fromarray((mask * 255).astype("uint8")))
+        color_img.paste(overlay, mask=bw_mask_img)
         composed = Image.alpha_composite(img_rgba, color_img)
         composed.save(os.path.join(COLORED_DIR, f"{base}__{name}.png"))
+
+        # REMOVED: Dummy transparent subject generation.
     
-    # Background
     if masks:
         union = np.logical_or.reduce(list(masks.values()))
         background_mask = ~union
-        Image.fromarray((background_mask * 255).astype("uint8"), mode="L").save(os.path.join(BW_DIR, "background", f"{base}__background.png"))
-        bg_visible = Image.new("RGBA", (w, h))
-        bg_visible.paste(img, mask=Image.fromarray((background_mask * 255).astype("uint8")))
-        bg_visible.save(os.path.join(COLORED_DIR, "background", f"{base}__background.png"))
+        bg_mask_img = Image.fromarray((background_mask * 255).astype("uint8"), mode="L")
+        bg_mask_img.save(os.path.join(BW_DIR, "background", f"{base}__background.png"))
+        
+        # REMOVED: Dummy transparent background generation.
 
 
 if __name__ == "__main__":
@@ -245,7 +230,6 @@ if __name__ == "__main__":
     p.add_argument("--subjects", nargs="+", required=True, help="List of subject names (e.g., 'person dog car').")
     p.add_argument("--dummy", action="store_true", help="Use dummy masks for testing instead of the model.")
     
-    # --- FIX: Add the new argument here ---
     p.add_argument(
         "--grounding-model", 
         default="IDEA-Research/grounding-dino-tiny", 
@@ -253,21 +237,13 @@ if __name__ == "__main__":
     )
     
     args = p.parse_args()
-
-    # --- FIX: Use the argument to set the model name ---
-    # Note: argparse converts --grounding-model to args.grounding_model
     GROUNDING_MODEL = args.grounding_model 
 
     if not os.path.exists(args.image):
         print(f"Error: Image not found at '{args.image}'")
         sys.exit(1)
         
-    # Now, you must load the models *after* parsing the arguments
-    print(f"Loading Grounding DINO model: {GROUNDING_MODEL}...")
-    processor = AutoProcessor.from_pretrained(GROUNDING_MODEL)
-    grounding_model = AutoModelForZeroShotObjectDetection.from_pretrained(GROUNDING_MODEL).to(DEVICE)
-    print("Models loaded successfully.")
-
-
     generate_masks(args.image, args.subjects, use_dummy=args.dummy)
+    
+    # UPDATED: Final print message reflects the new, focused role of the script.
     print("\nProcess complete. Masks saved to 'colored_masks/' and 'blackwhite_masks/' directories.")
