@@ -5,6 +5,8 @@ import os
 import shutil
 import time
 import threading
+import subprocess  # <<< ADDED: To run external scripts
+import sys         # <<< ADDED: To find the python executable
 
 # --- Local pipeline modules ---
 # It's good practice to handle potential import errors.
@@ -135,7 +137,7 @@ class BeforeAfterApp:
 
     # <<< MODIFIED function signature to accept subjects
     def run_full_pipeline(self, stored_path: str, subjects: list):
-        """Run segmentation and transparency generation in the background."""
+        """Run segmentation, transparency, compression, and merging in the background."""
         
         # We now receive the subjects directly. If the list is empty, we use dummy data.
         use_dummy = not subjects
@@ -160,7 +162,7 @@ class BeforeAfterApp:
         # 2. Create transparent images from bw masks
         if make_transparent is not None:
             try:
-                make_transparent.process_all_for_image(stored_path)
+                make_transparent.process_image(stored_path)
             except Exception as e:
                 message = f"Transparency generation failed: {e}"
                 try:
@@ -171,16 +173,88 @@ class BeforeAfterApp:
         else:
             print("make_transparent module not available. Skipping.")
 
-        # 3. Notify user of completion
-        msg = "Pipeline completed"
+        # 3. Notify user of pipeline completion
+        msg = "Main pipeline completed"
         if use_dummy:
-            msg += " (used dummy segmentation masks)"
+            msg += " (used dummy segmentation masks).\n\nNow starting compression script..."
         
         try:
-            # Schedule the final message box to run on the main thread.
-            self.root.after(0, lambda: messagebox.showinfo("Done", msg))
+            # Schedule the message box to run on the main thread.
+            self.root.after(0, lambda: messagebox.showinfo("Pipeline Step 1/3 Done", msg))
         except Exception:
             print(msg)
+
+        # -------------------------------------------------------------------
+        # <<< START: STEP 2 - RUN COMPRESSION SCRIPT >>>
+        # -------------------------------------------------------------------
+        script_dir = os.path.dirname(__file__)
+        python_executable = sys.executable
+        
+        try:
+            compress_script_path = os.path.join(script_dir, 'compress_script.py')
+            if not os.path.exists(compress_script_path):
+                raise FileNotFoundError(f"'{compress_script_path}' not found.")
+
+            result_compress = subprocess.run(
+                [python_executable, compress_script_path],
+                capture_output=True, text=True, check=True, cwd=script_dir
+            )
+            
+            # If successful, show a success message on the main thread
+            compress_msg = f"Compression finished successfully!\n\nNow starting final merge...\n\n{result_compress.stdout}"
+            self.root.after(0, lambda: messagebox.showinfo("Pipeline Step 2/3 Done", compress_msg))
+
+        except FileNotFoundError as e:
+            error_msg = f"Could not find the compression script: {e}"
+            self.root.after(0, lambda: messagebox.showerror("Script Error", error_msg))
+            return # Stop pipeline if this fails
+        
+        except subprocess.CalledProcessError as e:
+            error_msg = f"The compression script failed.\n\nError details:\n{e.stderr}"
+            self.root.after(0, lambda: messagebox.showerror("Compression Failed", error_msg))
+            return # Stop pipeline if this fails
+        
+        except Exception as e:
+            error_msg = f"An unexpected error occurred during compression: {e}"
+            self.root.after(0, lambda: messagebox.showerror("Execution Error", error_msg))
+            return # Stop pipeline if this fails
+        # -------------------------------------------------------------------
+        # <<< END: COMPRESSION SCRIPT >>>
+        # -------------------------------------------------------------------
+
+
+        # -------------------------------------------------------------------
+        # <<< START: STEP 3 - RUN MERGE SCRIPT >>>
+        # -------------------------------------------------------------------
+        try:
+            merge_script_path = os.path.join(script_dir, 'merge_compressed.py')
+            if not os.path.exists(merge_script_path):
+                raise FileNotFoundError(f"'{merge_script_path}' not found.")
+
+            result_merge = subprocess.run(
+                [python_executable, merge_script_path],
+                capture_output=True, text=True, check=True, cwd=script_dir
+            )
+            
+            # If successful, show a final success message
+            success_msg = f"Pipeline fully completed!\n\nImage merged successfully!\n\n{result_merge.stdout}"
+            self.root.after(0, lambda: messagebox.showinfo("Pipeline 3/3 Complete!", success_msg))
+
+        except FileNotFoundError as e:
+            error_msg = f"Could not find the merge script: {e}"
+            self.root.after(0, lambda: messagebox.showerror("Script Error", error_msg))
+        
+        except subprocess.CalledProcessError as e:
+            error_msg = f"The merge script failed.\n\nError details:\n{e.stderr}"
+            self.root.after(0, lambda: messagebox.showerror("Merge Failed", error_msg))
+        
+        except Exception as e:
+            error_msg = f"An unexpected error occurred during merging: {e}"
+            self.root.after(0, lambda: messagebox.showerror("Execution Error", error_msg))
+        # -------------------------------------------------------------------
+        # <<< END: MERGE SCRIPT >>>
+        # -------------------------------------------------------------------
+
 
     def compute_after_image(self, img: Image.Image) -> Image.Image:
         """Placeholder for your image computation logic."""
