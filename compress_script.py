@@ -13,7 +13,7 @@ BACKGROUND_SUBFOLDER = 'background'
 FOREGROUND_COMPRESSION = 3 # High-quality lossless for PNG foregrounds
 
 # NEW: Quality setting for the intermediate background JPG
-BACKGROUND_JPG_QUALITY = 40 # Lower this for more drastic results (e.g., 25)
+BACKGROUND_JPG_QUALITY = 5 # Lower this for more drastic results (e.g., 25)
 
 def main():
     """
