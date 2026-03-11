@@ -1,0 +1,9 @@
+torch
+torchvision
+opencv-python
+numpy
+pillow
+supervision
+transformers
+ollama
+git+https://github.com/facebookresearch/sam2.git
