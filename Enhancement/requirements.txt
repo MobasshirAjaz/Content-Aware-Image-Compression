@@ -1,0 +1,42 @@
+# Requirements for the Enhancement pipeline (Content-Aware Background Enhancement)
+#
+# Install with:
+#   pip install -r requirements.txt
+#
+# Notes:
+# - PyTorch (torch, torchvision, torchaudio) should be installed separately
+#   via the official instructions for your CUDA version:
+#   https://pytorch.org/get-started/locally/
+#
+#   Example (CUDA 12.1):
+#     pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+#
+# - sam2 must be installed from GitHub:
+#     pip install git+https://github.com/facebookresearch/sam2.git
+#
+
+# --- Core image processing ---
+opencv-python
+numpy
+pillow
+
+# --- Real-ESRGAN and dependencies ---
+basicsr
+realesrgan
+gfpgan
+
+# --- Segmentation (Grounded SAM2) dependencies ---
+# These are needed because the Enhancement wrappers import from Compression
+supervision
+transformers
+
+# --- LLM subject detection ---
+ollama
+
+# --- SAM2 (install separately from GitHub) ---
+# pip install git+https://github.com/facebookresearch/sam2.git
+
+# --- PyTorch (install separately — see notes at top of file) ---
+# torch
+# torchvision
+# torchaudio
