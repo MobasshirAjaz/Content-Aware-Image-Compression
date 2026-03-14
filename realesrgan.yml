@@ -1,0 +1,17 @@
+name: resrgan
+channels:
+  - pytorch
+  - defaults
+dependencies:
+  - python=3.10
+  - pytorch
+  - torchvision
+  - cpuonly
+  - pip
+  - pip:
+      - opencv-python
+      - numpy
+      - pillow
+      - basicsr
+      - realesrgan
+      - gfpgan

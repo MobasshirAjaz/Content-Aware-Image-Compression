@@ -1,27 +1,17 @@
-# gui.py — Enhancement Pipeline GUI
-# Mirrors Compression/gui.py but runs the Enhancement pipeline:
-# LLM subject detection → segmentation → transparency → background enhancement → merge
-
+import os
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog
+from PIL import Image, ImageTk
 import os
 import shutil
 import time
 import threading
-import subprocess
-import sys
-
-# --- Dependency imports with error handling ---
-try:
-    from PIL import Image, ImageTk
-except ImportError:
-    print(
-        "Error: Pillow is not installed.\n"
-        "Install it with: pip install pillow"
-    )
-    sys.exit(1)
+import subprocess  # <<< ADDED: To run external scripts
+import sys         # <<< ADDED: To find the python executable
 
 # --- Local pipeline modules ---
+# It's good practice to handle potential import errors.
 try:
     from LLM import run_on_latest
 except (ImportError, Exception):
@@ -30,6 +20,7 @@ except (ImportError, Exception):
 try:
     import segmentation
 except (ImportError, Exception) as e:
+    # This will print the true reason the import is failing
     print(f"--- FAILED TO IMPORT SEGMENTATION ---")
     print(f"Error: {e}")
     print(f"------------------------------------")
@@ -41,31 +32,24 @@ except (ImportError, Exception):
     make_transparent = None
 
 
-class EnhancementApp:
+class BeforeAfterApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Content-Aware Background Enhancement")
+        self.root.title("Content-Aware Image Compression")
 
         # Upload button
-        self.upload_btn = tk.Button(
-            root, text="Upload Image", command=self.upload_image
-        )
+        self.upload_btn = tk.Button(root, text="Upload Image", command=self.upload_image)
         self.upload_btn.pack(pady=10)
 
         # Slider section
         self.canvas = tk.Canvas(root, width=600, height=400, bg="lightgray")
         self.canvas.pack()
 
-        self.slider = tk.Scale(
-            root, from_=0, to=100, orient="horizontal",
-            command=self.update_slider
-        )
+        self.slider = tk.Scale(root, from_=0, to=100, orient="horizontal", command=self.update_slider)
         self.slider.pack(fill="x", padx=20, pady=10)
 
         # Label for sizes
-        self.size_label = tk.Label(
-            root, text="Upload an image to see sizes", font=("Arial", 12)
-        )
+        self.size_label = tk.Label(root, text="Upload an image to see sizes", font=("Arial", 12))
         self.size_label.pack(pady=5)
 
         # Placeholders
@@ -97,7 +81,7 @@ class EnhancementApp:
         timestamp = int(time.time())
         stored_name = f"{name}_{timestamp}{ext}"
         stored_path = os.path.join(input_dir, stored_name)
-
+        
         try:
             shutil.copy2(filepath, stored_path)
         except Exception:
@@ -108,7 +92,7 @@ class EnhancementApp:
         self.before_img = Image.open(stored_path).convert("RGB").resize((600, 400))
         self.before_size = os.path.getsize(stored_path)
 
-        # Placeholder for after image (initially same as before)
+        # Placeholder for after image
         self.after_img = self.compute_after_image(self.before_img)
         self.after_img.save("temp_after.jpg", "JPEG")
         self.after_size = os.path.getsize("temp_after.jpg")
@@ -119,19 +103,16 @@ class EnhancementApp:
 
         # Clear canvas and add images
         self.canvas.delete("all")
-        self.canvas_before = self.canvas.create_image(
-            0, 0, anchor="nw", image=self.tk_before
-        )
-        self.canvas_after = self.canvas.create_image(
-            0, 0, anchor="nw", image=self.tk_after_full
-        )
+        self.canvas_before = self.canvas.create_image(0, 0, anchor="nw", image=self.tk_before)
+        self.canvas_after = self.canvas.create_image(0, 0, anchor="nw", image=self.tk_after_full)
 
         # Start slider
         self.slider.set(50)
         self.update_slider(50)
         self.update_size_label()
 
-        # --- Get user input in the main thread BEFORE starting the worker ---
+        # --- CORRECTED LOGIC ---
+        # 1. Get user input in the main thread BEFORE starting the worker.
         subjects = None
         if run_on_latest is not None:
             try:
@@ -140,171 +121,166 @@ class EnhancementApp:
                 subjects = None
 
         if not subjects:
-            prompt = simpledialog.askstring(
-                "Subjects",
-                "Enter comma-separated subject names (leave blank for dummy masks):"
-            )
+            # This is now safe because it's called from the main GUI thread.
+            prompt = simpledialog.askstring("Subjects", "Enter comma-separated subject names (leave blank for dummy masks):")
             if prompt:
                 subjects = [s.strip() for s in prompt.split(",") if s.strip()]
             else:
+                # Use an empty list to signal that dummy masks should be used.
                 subjects = []
 
-        # Start the background pipeline
+        # 2. Start the background pipeline and pass the subjects to it.
         worker = threading.Thread(
-            target=self.run_full_pipeline,
-            args=(stored_path, subjects),
+            target=self.run_full_pipeline, 
+            args=(stored_path, subjects), # <<< Pass subjects to the thread
             daemon=True
         )
         worker.start()
 
+    # <<< MODIFIED function signature to accept subjects
     def run_full_pipeline(self, stored_path: str, subjects: list):
-        """Run segmentation → transparency → enhancement → merge in background."""
-
+        """Run segmentation, transparency, compression, and merging in the background."""
+        
+        # We now receive the subjects directly. If the list is empty, we use dummy data.
         use_dummy = not subjects
         if use_dummy:
             subjects = ["subject1", "subject2", "subject3"]
 
-        # ---------------------------------------------------------------
-        # STEP 1: Segmentation
-        # ---------------------------------------------------------------
+        # 1. Run segmentation
         if segmentation is not None:
             try:
-                segmentation.generate_masks(
-                    stored_path, subjects, use_dummy=use_dummy
-                )
+                segmentation.generate_masks(stored_path, subjects, use_dummy=use_dummy)
             except Exception as e:
                 message = f"Segmentation failed: {e}"
                 try:
-                    self.root.after(
-                        0, lambda: messagebox.showerror("Segmentation Error", message)
-                    )
+                    # Use messagebox from the main thread if possible, but print as a fallback.
+                    self.root.after(0, lambda: messagebox.showerror("Segmentation Error", message))
                 except Exception:
                     print(message)
                 return
         else:
             print("Segmentation module not available. Skipping segmentation.")
 
-        # ---------------------------------------------------------------
-        # STEP 2: Create transparent images from BW masks
-        # ---------------------------------------------------------------
+        # 2. Create transparent images from bw masks
         if make_transparent is not None:
             try:
                 make_transparent.process_image(stored_path)
             except Exception as e:
                 message = f"Transparency generation failed: {e}"
                 try:
-                    self.root.after(
-                        0, lambda: messagebox.showerror("Transparency Error", message)
-                    )
+                    self.root.after(0, lambda: messagebox.showerror("Transparency Error", message))
                 except Exception:
                     print(message)
                 return
         else:
             print("make_transparent module not available. Skipping.")
 
-        msg = "Segmentation & transparency completed"
+        # 3. Notify user of pipeline completion
+        msg = "Main pipeline completed"
         if use_dummy:
-            msg += " (used dummy masks)."
-        msg += "\n\nNow starting background enhancement..."
-
+            msg += " (used dummy segmentation masks).\n\nNow starting compression script..."
+        
         try:
-            self.root.after(
-                0, lambda: messagebox.showinfo("Pipeline Step 1/3 Done", msg)
-            )
+            # Schedule the message box to run on the main thread.
+            self.root.after(0, lambda: messagebox.showinfo("Pipeline Step 1/3 Done", msg))
         except Exception:
             print(msg)
 
-        # ---------------------------------------------------------------
-        # STEP 3: Enhance background with Real-ESRGAN
-        # ---------------------------------------------------------------
+        # -------------------------------------------------------------------
+        # <<< START: STEP 2 - ENHANCE BACKGROUND (Real-ESRGAN) >>>
+        # -------------------------------------------------------------------
+        script_dir = os.path.dirname(__file__)
+        
+        # 1. This is the main environment (image_compression) for Step 3
+        python_executable = sys.executable 
+        
+        # 2. This is the target environment (resrgan) for Step 2
+        resrgan_python_executable = r"C:\Users\KIIT\miniconda3\envs\resrgan\python.exe"
+        
+        # Extract the base name (e.g. "image_12345") to locate Step 1's output
+        base_name = os.path.splitext(os.path.basename(stored_path))[0]
+        step1_output_dir = os.path.join(script_dir, 'transparent_images', base_name)
+        
+        # make_transparent.py saves the background in a specific subfolder:
+        input_bg_path = os.path.join(step1_output_dir, 'background', 'background.png')
+        
+        # Define where Real-ESRGAN should save the result
+        enhanced_dir = os.path.join(script_dir, 'enhanced_output', base_name)
+        os.makedirs(enhanced_dir, exist_ok=True)
+        
         try:
-            import enhance_background
-            enhance_background.run()
-        except Exception as e:
-            message = f"Background enhancement failed: {e}"
-            try:
-                self.root.after(
-                    0, lambda: messagebox.showerror("Enhancement Failed", message)
-                )
-            except Exception:
-                print(message)
-            return
+            esrgan_script_path = os.path.join(script_dir, 'inference_realesrgan.py')
+            if not os.path.exists(esrgan_script_path):
+                raise FileNotFoundError(f"'{esrgan_script_path}' not found.")
 
-        enhance_msg = "Background enhancement finished successfully!\n\nNow starting final merge..."
-        try:
-            self.root.after(
-                0, lambda: messagebox.showinfo("Pipeline Step 2/3 Done", enhance_msg)
+            # Run Step 2 using the resrgan Python executable!
+            result_enhance = subprocess.run(
+                [
+                    resrgan_python_executable, esrgan_script_path, # <<< CHANGED HERE
+                    '-n', 'RealESRGAN_x4plus',
+                    '-i', input_bg_path,
+                    '-o', enhanced_dir,
+                    '-s', '1', 
+                    '--suffix', 'enhanced',
+                    '--ext', 'png',
+                    '--fp32'
+                ],
+                capture_output=True, text=True, check=True, cwd=script_dir
             )
-        except Exception:
-            print(enhance_msg)
+            
+            enhance_msg = f"Background enhanced successfully!\n\nNow starting final merge...\n\n{result_enhance.stdout}"
+            self.root.after(0, lambda m=enhance_msg: messagebox.showinfo("Pipeline Step 2/3 Done", m))
 
-        # ---------------------------------------------------------------
-        # STEP 4: Merge enhanced background with foregrounds
-        # ---------------------------------------------------------------
-        try:
-            import merge_enhanced
-            merge_enhanced.run()
+        except FileNotFoundError as e:
+            err_msg = str(e)
+            self.root.after(0, lambda m=err_msg: messagebox.showerror("Script Error", m))
+            return 
+        except subprocess.CalledProcessError as e:
+            err_msg = f"Enhancement failed.\n\nError details:\n{e.stderr}"
+            self.root.after(0, lambda m=err_msg: messagebox.showerror("Enhancement Failed", m))
+            return 
         except Exception as e:
-            message = f"Merge failed: {e}"
-            try:
-                self.root.after(
-                    0, lambda: messagebox.showerror("Merge Failed", message)
-                )
-            except Exception:
-                print(message)
-            return
+            err_msg = str(e)
+            self.root.after(0, lambda m=err_msg: messagebox.showerror("Execution Error", m))
+            return 
+        # -------------------------------------------------------------------
+        # <<< END: ENHANCE BACKGROUND >>>
+        # -------------------------------------------------------------------
 
-        # --- Update the after image with the actual result ---
-        self._update_after_image()
-
-        success_msg = "Pipeline fully completed!\n\nEnhanced image merged successfully!"
+        
+        # -------------------------------------------------------------------
+        # <<< START: STEP 3 - RUN MERGE SCRIPT >>>
+        # -------------------------------------------------------------------
         try:
-            self.root.after(
-                0, lambda: messagebox.showinfo("Pipeline 3/3 Complete!", success_msg)
+            merge_script_path = os.path.join(script_dir, 'merge_compressed.py')
+            if not os.path.exists(merge_script_path):
+                raise FileNotFoundError(f"'{merge_script_path}' not found.")
+
+            result_merge = subprocess.run(
+                [
+                    python_executable, merge_script_path, 
+                    '--subjects_dir', step1_output_dir, 
+                    '--bg_dir', enhanced_dir,
+                    '--base_name', base_name
+                ],
+                capture_output=True, text=True, check=True, cwd=script_dir
             )
-        except Exception:
-            print(success_msg)
+            
+            success_msg = f"Pipeline fully completed!\n\nImage merged successfully!\n\n{result_merge.stdout}"
+            self.root.after(0, lambda m=success_msg: messagebox.showinfo("Pipeline 3/3 Complete!", m))
 
-    def _update_after_image(self):
-        """Try to load the final enhanced image and update the canvas."""
-        try:
-            base_dir = os.path.dirname(__file__)
-            final_dir = os.path.join(base_dir, "final_enhanced_output")
-
-            if not os.path.isdir(final_dir):
-                return
-
-            # Find the latest enhanced JPG
-            jpg_files = [
-                f for f in os.listdir(final_dir)
-                if f.lower().endswith(('_enhanced.jpg', '_enhanced.png'))
-            ]
-            if not jpg_files:
-                return
-
-            latest = max(
-                jpg_files,
-                key=lambda f: os.path.getmtime(os.path.join(final_dir, f))
-            )
-            latest_path = os.path.join(final_dir, latest)
-
-            self.after_img = Image.open(latest_path).convert("RGB").resize((600, 400))
-            self.after_size = os.path.getsize(latest_path)
-
-            # Schedule the UI update on the main thread
-            def _do_update():
-                self.tk_after_full = ImageTk.PhotoImage(self.after_img)
-                self.canvas.itemconfig(self.canvas_after, image=self.tk_after_full)
-                self.update_slider(self.slider.get())
-                self.update_size_label()
-
-            self.root.after(0, _do_update)
-
+        except subprocess.CalledProcessError as e:
+            err_msg = f"Merge script failed!\n\nDetails:\n{e.stderr}\nOutput:\n{e.stdout}"
+            self.root.after(0, lambda m=err_msg: messagebox.showerror("Merge Error", m))
         except Exception as e:
-            print(f"Could not update after image: {e}")
+            err_msg = str(e)
+            self.root.after(0, lambda m=err_msg: messagebox.showerror("Merge Error", m))
+        # -------------------------------------------------------------------
+        # <<< END: MERGE SCRIPT >>>
+        # -------------------------------------------------------------------
 
     def compute_after_image(self, img: Image.Image) -> Image.Image:
-        """Placeholder — returns a copy until the pipeline produces the real output."""
+        """Placeholder for your image computation logic."""
         return img.copy()
 
     def update_slider(self, value):
@@ -321,25 +297,23 @@ class EnhancementApp:
 
         self.canvas.itemconfig(self.canvas_before, image=self.tk_before)
         self.canvas.itemconfig(self.canvas_after, image=tk_cropped)
-        self.tk_after_cropped = tk_cropped  # Keep reference
+        self.tk_after_cropped = tk_cropped # Keep reference
 
     def update_size_label(self):
         def fmt_size(size_bytes):
             if size_bytes < 1024:
                 return f"{size_bytes} B"
-            elif size_bytes < 1024 ** 2:
-                return f"{size_bytes / 1024:.2f} KB"
+            elif size_bytes < 1024**2:
+                return f"{size_bytes/1024:.2f} KB"
             else:
-                return f"{size_bytes / 1024 ** 2:.2f} MB"
+                return f"{size_bytes/1024**2:.2f} MB"
 
         before_str = fmt_size(self.before_size)
         after_str = fmt_size(self.after_size)
-        self.size_label.config(
-            text=f"Before size: {before_str}   →   After size: {after_str}"
-        )
+        self.size_label.config(text=f"Before size: {before_str}   →   After size: {after_str}")
 
 
 if __name__ == "__main__":
     root = tk.Tk()
-    app = EnhancementApp(root)
+    app = BeforeAfterApp(root)
     root.mainloop()
