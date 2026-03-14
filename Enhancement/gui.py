@@ -223,7 +223,8 @@ class BeforeAfterApp:
                     '-s', '1', 
                     '--suffix', 'enhanced',
                     '--ext', 'png',
-                    '--fp32'
+                    '--fp32',
+                    '--tile', '512'
                 ],
                 capture_output=True, text=True, check=True, cwd=script_dir
             )
