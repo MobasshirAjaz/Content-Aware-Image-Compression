@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+<meta charset="UTF-8">
+<title>Content-Aware Compression</title>
+<link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+
+<div class="container">
+
+<h1>🧠 Content-Aware Image Compression</h1>
+<p class="subtitle">Upload an image and compress or decompress it</p>
+
+<div class="upload-box">
+<input type="file" id="imageInput" accept="image/*">
+</div>
+
+<div class="mode-select">
+
+<label>
+<input type="radio" name="mode" value="compress" checked>
+Compress
+</label>
+
+<label>
+<input type="radio" name="mode" value="decompress">
+Decompress
+</label>
+
+</div>
+
+<button onclick="processImage()">Process</button>
+
+<div class="images">
+
+<div class="image-box">
+<p class="result-title">Original Image</p>
+<img id="originalImage">
+</div>
+
+<div class="image-box">
+<p class="result-title">Processed Image</p>
+<img id="processedImage">
+</div>
+
+</div>
+
+</div>
+
+<script src="script.js"></script>
+
+</body>
+</html>

@@ -238,7 +238,14 @@ class BeforeAfterApp:
             
             # If successful, show a final success message
             success_msg = f"Pipeline fully completed!\n\nImage merged successfully!\n\n{result_merge.stdout}"
-            self.root.after(0, lambda: messagebox.showinfo("Pipeline 3/3 Complete!", success_msg))
+            
+            def on_complete():
+                messagebox.showinfo("Pipeline 3/3 Complete!", success_msg)
+                # CRITICAL: Close the invisible Tkinter process if triggered by web UI
+                if '--auto' in sys.argv:
+                    self.root.quit()
+                    
+            self.root.after(0, on_complete)
 
         except FileNotFoundError as e:
             error_msg = f"Could not find the merge script: {e}"
@@ -291,6 +298,30 @@ class BeforeAfterApp:
 
 
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--auto", type=str, help="Run automatically from web UI")
+    args = parser.parse_args()
+
     root = tk.Tk()
     app = BeforeAfterApp(root)
-    root.mainloop()
+
+    if args.auto:
+        # 1. Hide the main visual canvas window
+        root.withdraw() 
+        
+        # 2. Trigger the Tkinter popup to ask for subjects
+        subjects = []
+        prompt = simpledialog.askstring("Subjects", "Enter comma-separated subject names (leave blank for dummy masks):", parent=root)
+        if prompt:
+            subjects = [s.strip() for s in prompt.split(",") if s.strip()]
+            
+        # 3. Start the pipeline with the file sent from the Web UI
+        worker = threading.Thread(target=app.run_full_pipeline, args=(args.auto, subjects), daemon=True)
+        worker.start()
+        
+        # Keep Tkinter running in the background so messageboxes still work
+        root.mainloop() 
+    else:
+        # Run normally if you just double-click the script
+        root.mainloop()
